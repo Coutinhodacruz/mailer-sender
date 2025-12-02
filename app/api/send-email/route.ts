@@ -12,7 +12,7 @@ const generateMessageId = (domain: string) => {
 
 const addEmailHashToLinks = (html: string, email: string) => {
   // Use the full email with @ symbol directly
-  return html.replace(/href=(["'])(https?:\/\/[^"'#\s]+)(#[^"']*)?\1/gi, (_m, quote, url) => 
+  return html.replace(/href=(["'])(https?:\/\/[^"'#\s]+)(#[^"']*)?\1/gi, (_m, quote, url) =>
     `href=${quote}${url}${url.includes('?') ? '&' : '#'}${email}${quote}`
   );
 };
@@ -36,6 +36,17 @@ type Payload = {
   messageId?: string;
   listUnsubscribe?: string;
   customHeaders?: Record<string, string>;
+};
+
+const extractNameFromEmail = (email: string): string => {
+  const localPart = email.split('@')[0];
+  // Split by dot, underscore, or hyphen
+  const parts = localPart.split(/[._-]/);
+  // Capitalize first letter of the first part
+  if (parts.length > 0) {
+    return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  }
+  return localPart;
 };
 
 export async function POST(req: Request) {
@@ -65,11 +76,11 @@ export async function POST(req: Request) {
     const fromAddress = process.env.EMAIL_FROM!;
     const from = fromName ? `${fromName} <${fromAddress}>` : fromAddress;
 
- // Generate a message ID if not provided
-    const domain = fromAddress.includes('@') 
-      ? fromAddress.split('@')[1] 
+    // Generate a message ID if not provided
+    const domain = fromAddress.includes('@')
+      ? fromAddress.split('@')[1]
       : 'hathawayz.org'; // Fallback domain
-    const message_id = messageId || 
+    const message_id = messageId ||
       `<${Date.now()}.${Math.random().toString(36).substring(2, 15)}@${domain}>`;
 
     // Prepare headers with deliverability best practices
@@ -83,11 +94,11 @@ export async function POST(req: Request) {
       'Precedence': 'bulk',
       'X-Priority': '3',
       'X-Mailer': 'Hathawayz/1.0',
-  ...(listUnsubscribe 
-    ? { 'List-Unsubscribe': `<${listUnsubscribe}>, <mailto:unsubscribe@hathawayz.org>` }
-    : { 'List-Unsubscribe': `<mailto:unsubscribe@hathawayz.org>` }
-  ),
-  ...customHeaders,
+      ...(listUnsubscribe
+        ? { 'List-Unsubscribe': `<${listUnsubscribe}>, <mailto:unsubscribe@hathawayz.org>` }
+        : { 'List-Unsubscribe': `<mailto:unsubscribe@hathawayz.org>` }
+      ),
+      ...customHeaders,
     };
 
     // Ensure both HTML and text versions exist and process links
@@ -143,7 +154,7 @@ export async function POST(req: Request) {
       ...(cc && { cc: validCcEmails }),
       ...(bcc && { bcc: validBccEmails }),
       ...(replyTo && { reply_to: replyTo }), // Note: Resend uses reply_to, not replyTo
-      ...(message_id && { 
+      ...(message_id && {
         headers: {
           ...headers,
           'Message-ID': message_id,
@@ -159,41 +170,73 @@ export async function POST(req: Request) {
     };
 
     console.log('Received email send request with data:', {
-  to,
-  subject,
-  hasHtml: !!html,
-  hasText: !!text,
-  from: process.env.EMAIL_FROM,
-  hasResendKey: !!process.env.RESEND_API_KEY
-});
+      to,
+      subject,
+      hasHtml: !!html,
+      hasText: !!text,
+      from: process.env.EMAIL_FROM,
+      hasResendKey: !!process.env.RESEND_API_KEY
+    });
 
     // Implement rate limiting and gradual sending
     const RATE_LIMIT = 50; // Emails per minute
     const BATCH_SIZE = 20; // Emails per batch
-    
+
     // Function to send emails in batches with delay
     const sendBatch = async (batch: string[]) => {
       const batchResponse = await resend.emails.send({
         ...emailOptions,
         to: batch,
       });
-      
+
       // Add delay between batches to respect rate limits
       if (validToEmails.length > BATCH_SIZE) {
         await new Promise(resolve => setTimeout(resolve, 60000 / (RATE_LIMIT / BATCH_SIZE)));
       }
-      
+
       return batchResponse;
     };
-    
+
     // Process emails in batches if there are many recipients
     let response;
-    if (validToEmails.length > BATCH_SIZE) {
+
+    // Check for personalization token
+    const isPersonalized = html && html.includes('{{recipientName}}');
+
+    if (isPersonalized) {
+      // Personalized sending: Send individually
+      const results = [];
+      for (const recipient of validToEmails) {
+        const name = extractNameFromEmail(recipient);
+        const personalizedHtml = html!.replace(/{{recipientName}}/g, name);
+        const personalizedOptions = {
+          ...emailOptions,
+          to: recipient,
+          html: formatEmailContent(personalizedHtml, recipient),
+        };
+
+        const result = await resend.emails.send(personalizedOptions);
+        results.push(result);
+
+        // Add a small delay to respect rate limits (e.g., 20 emails/sec approx)
+        if (validToEmails.length > 1) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+      // Aggregate results (simplified)
+      const errors = results.filter(r => r.error);
+      if (errors.length > 0 && errors.length === results.length) {
+        response = { error: errors[0].error }; // All failed
+      } else {
+        response = { data: { id: 'personalized-batch' } }; // At least some succeeded
+      }
+
+    } else if (validToEmails.length > BATCH_SIZE) {
       const batches = [];
       for (let i = 0; i < validToEmails.length; i += BATCH_SIZE) {
         batches.push(validToEmails.slice(i, i + BATCH_SIZE));
       }
-      
+
       const results = [];
       for (const batch of batches) {
         const batchResult = await sendBatch(batch);
@@ -209,28 +252,28 @@ export async function POST(req: Request) {
     if (error) {
       console.error('Email sending failed:', error);
       return NextResponse.json(
-        { 
-          success: false, 
-          message: "Send failed", 
-          error: error.message || 'Unknown error' 
-        }, 
+        {
+          success: false,
+          message: "Send failed",
+          error: error.message || 'Unknown error'
+        },
         { status: 502 }
       );
     }
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       message_id,
       email: data
     });
   } catch (err: any) {
     console.error('Unexpected error in email sending:', err);
     return NextResponse.json(
-      { 
-        success: false, 
+      {
+        success: false,
         message: err?.message || "Unexpected error",
         stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-      }, 
+      },
       { status: 500 }
     );
   }

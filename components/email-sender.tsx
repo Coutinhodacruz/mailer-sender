@@ -7,8 +7,20 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Plus, X, Send, Code, Link2, Users, Sparkles, Trash2 } from "lucide-react"
+import { Plus, X, Send, Code, Link2, Users, Sparkles, Trash2, Link as LinkIcon } from "lucide-react"
+import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { useRef } from "react"
 
 export function EmailSender() {
   const [emails, setEmails] = useState<string[]>([])
@@ -17,6 +29,99 @@ export function EmailSender() {
   const [subject, setSubject] = useState("")
   const [content, setContent] = useState("")
   const [isSending, setIsSending] = useState(false)
+  const [isLinkDialogOpen, setIsLinkDialogOpen] = useState(false)
+  const [linkUrl, setLinkUrl] = useState("")
+  const [linkText, setLinkText] = useState("")
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const wrapInTemplate = () => {
+    const template = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${subject || 'Email Template'}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333333;
+      margin: 0;
+      padding: 20px;
+      background-color: #f8f9fa;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #007BFF;
+      font-size: 20px;
+    }
+    p {
+      font-size: 15px;
+      margin: 10px 0;
+    }
+    .button {
+      display: inline-block;
+      background-color: #007BFF;
+      color: #ffffff !important;
+      padding: 12px 24px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: bold;
+      margin-top: 20px;
+    }
+    .footer {
+      margin-top: 30px;
+      font-size: 12px;
+      color: #666666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Dear {{recipientName}},</h1>
+    ${content}
+    <div class="footer">
+      © ${new Date().getFullYear()} .
+    </div>
+  </div>
+</body>
+</html>`
+    setContent(template)
+  }
+
+  const insertLink = () => {
+    if (!linkUrl) return
+
+    const textToInsert = `<a href="${linkUrl}" target="_blank" rel="noopener noreferrer">${linkText || linkUrl}</a>`
+
+    if (textareaRef.current) {
+      const start = textareaRef.current.selectionStart
+      const end = textareaRef.current.selectionEnd
+      const newContent = content.substring(0, start) + textToInsert + content.substring(end)
+      setContent(newContent)
+
+      // Reset and close
+      setLinkUrl("")
+      setLinkText("")
+      setIsLinkDialogOpen(false)
+
+      // Restore focus (optional, might need setTimeout)
+      textareaRef.current.focus()
+    } else {
+      // Fallback if ref is not available
+      setContent(content + textToInsert)
+      setLinkUrl("")
+      setLinkText("")
+      setIsLinkDialogOpen(false)
+    }
+  }
 
   const validateEmail = (email: string) => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
@@ -48,38 +153,38 @@ export function EmailSender() {
   }
 
   const handleSend = async () => {
-  if (emails.length === 0 || !subject || !content) return
-  setIsSending(true)
-  
-  try {
-    const response = await fetch('/api/send-email', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        to: emails,
-        subject,
-        html: content,
-      }),
-    })
+    if (emails.length === 0 || !subject || !content) return
+    setIsSending(true)
 
-    const data = await response.json()
-    
-    if (!response.ok) {
-      throw new Error(data.message || 'Failed to send email')
+    try {
+      const response = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to: emails,
+          subject,
+          html: content,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to send email')
+      }
+
+      // Clear form on success
+      setEmails([])
+      toast.success('Email sent successfully!')
+    } catch (error: any) {
+      console.error('Error sending email:', error)
+      toast.error(`Error: ${error.message || 'Failed to send email. Please try again.'}`)
+    } finally {
+      setIsSending(false)
     }
-
-    // Clear form on success
-    setEmails([])
-    alert('Email sent successfully!')
-  } catch (error: any) {
-    console.error('Error sending email:', error)
-    alert(`Error: ${error.message || 'Failed to send email. Please try again.'}`)
-  } finally {
-    setIsSending(false)
   }
-}
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
@@ -189,19 +294,61 @@ export function EmailSender() {
             <div className="flex items-center justify-between mb-2">
               <label className="text-sm text-muted-foreground">Email Content</label>
               <div className="flex gap-1">
-                <Button variant="ghost" size="icon" className="h-8 w-8">
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={wrapInTemplate} title="Wrap in HTML Template">
                   <Code className="h-4 w-4" />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <Link2 className="h-4 w-4" />
-                </Button>
+                <Dialog open={isLinkDialogOpen} onOpenChange={setIsLinkDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" title="Insert Link">
+                      <Link2 className="h-4 w-4" />
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-[425px]">
+                    <DialogHeader>
+                      <DialogTitle>Insert Link</DialogTitle>
+                      <DialogDescription>
+                        Add a hyperlink to your email content.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      <div className="grid grid-cols-4 items-center gap-4">
+                        <Label htmlFor="link-url" className="text-right">
+                          URL
+                        </Label>
+                        <Input
+                          id="link-url"
+                          placeholder="https://example.com"
+                          value={linkUrl}
+                          onChange={(e) => setLinkUrl(e.target.value)}
+                          className="col-span-3"
+                        />
+                      </div>
+                      <div className="grid grid-cols-4 items-center gap-4">
+                        <Label htmlFor="link-text" className="text-right">
+                          Text
+                        </Label>
+                        <Input
+                          id="link-text"
+                          placeholder="Click here"
+                          value={linkText}
+                          onChange={(e) => setLinkText(e.target.value)}
+                          className="col-span-3"
+                        />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button onClick={insertLink}>Insert Link</Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </div>
             </div>
             <Textarea
-              placeholder="Write your email content here... HTML is supported."
+              ref={textareaRef}
+              placeholder="Write your content here..."
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              className="flex-1 min-h-64 bg-secondary border-border resize-none"
+              className="flex-1 min-h-64 bg-secondary border-border resize-y font-mono text-sm field-sizing-fixed"
             />
           </div>
 
